@@ -1,0 +1,141 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Clifton Bell"
+date: "2024-03-26"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+``` {r, include = FALSE}
+library(AppliedPredictiveModeling)
+library(caret)
+library(dplyr)
+library(pgmm)
+library(rpart)
+library(readr)
+library(randomForest)
+library(gbm)
+library(lubridate)
+library(forecast)
+library(e1071)
+library(elasticnet)
+library(openssl)
+library(RCurl)
+library(fields)
+
+options(download.file.method = "libcurl")
+options("openssl.cainfo" = system.file("cacert", "bundle.r", package = "openssl"))
+
+rm(list = ls())
+```
+
+## Introduction
+
+The objective of this project is to create a model to predict how well subjects
+perform an exercise activity using accelerometer data. Students are directed to
+use the Weight Lifting Exercise Data originally compiled by Velloso and others (2013).
+This dataset includes a large number of accelerometer measurements from subjects
+who were directed to perform a weight lifting exercise in one of five different
+ways (one correct and four incorrect) designated by the classe variable. The model
+can use any the variables to predict the classe. The model must be built on a large
+training dataset, and then applied to predict the classe of 20 cases in a test dataset.
+
+## Exploratory Data Analysis and Variable Selection
+
+The training and test data were loaded with the following code:
+
+``` {r, echo = TRUE}
+training <- read.csv(text = getURL("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", ssl.verifypeer = FALSE))
+testing <- read.csv(text = getURL("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", ssl.verifypeer = FALSE))
+```
+
+Many of the variables did not have data for the large majority (~97%)  of the cases,
+and represent summary measurements. Those variables were excluded from the analysis.
+The timestamp variables and  new_window variables also did not appear relevant,
+and were excluded. The following code was used to subset the data to be included
+in the model building phase:
+
+``` {r, echo = TRUE}
+percent_missing <- colMeans(is.na(training) | sapply(training, function(x) x == "" |
+          is.nan(x) | is.null(x))) * 100
+
+variables_with_few_missing <- names(percent_missing[percent_missing < 25])
+
+exclude_vars <- c("X", "classe", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+                  "cvtd_timestamp", "new_window")
+
+include_variables <- setdiff(variables_with_few_missing, exclude_vars)
+```
+
+The filtered dataset still contained a  large number (>50) of accelerometer variables.
+A correlation matrix of these variables (not shown due to size) indicated that many
+of the variables were correlated with each other.
+
+## Additional Pre-Processing: PCA Model
+
+Due to the large number of correlated variables, it was decided to reduce the reduce
+data set by fitting a principal components analysis (PCA) model to the dataset.
+The model was parameterized to include the principal components that captured
+90% of the variance of the dataset. This was performed with the following code:
+
+``` {r}
+
+for_PCA <- training[, include_variables]
+
+pca_model <- preProcess(for_PCA, method = "pca", thresh = 0.90)
+
+## Apply the PCA transformation to the predictors
+
+training_pca <- predict(pca_model, training[,include_variables])
+
+train_data_transformed <- cbind(training_pca, classe = training$classe)
+
+```
+
+##  Random Forest Model with K-Fold Cross Validation
+
+A random forest model was fit to the PCA results using 10-fold cross-validation,
+as follows:
+
+``` {r random_forest, echo = TRUE, cache = TRUE}
+
+ctrl <- trainControl(method = "cv",   # Use k-fold cross-validation
+                     number = 10)     # Number of folds
+
+rf_model <- train(classe ~ ., data = train_data_transformed, 
+                  method = "rf", trControl = ctrl, na.action = na.omit)
+
+out_of_sample_error <- 1 - rf_model$results[1, "Accuracy"]
+
+```
+
+Based on the cross validation, the expected out-of-sample error is `r out_of_sample_error * 100`%.
+
+## Apply the Final Model to the Test Dataset
+
+The following code was used to apply the final model to the test data set and
+predict the values of classe for the 20 test cases (Table 1). Entering these
+values into the final course quiz revealed that all 20 predicted values of classe
+were correct.
+
+``` {r apply_to_test, echo = TRUE}
+
+testing_pca <- predict(pca_model, testing[,include_variables])
+
+test_set_predictions <- testing_pca %>%
+  predict(rf_model, newdata = .) %>%  # Make predictions
+  cbind(testing, .)
+
+names(test_set_predictions)[names(test_set_predictions) == "."] <- "pred_classe"
+
+test_set_predictions <- subset(test_set_predictions, select = c(X, user_name, pred_classe))
+
+```
+
+```{r, results='markdowni'}
+knitr::kable(test_set_predictions, caption = "Table 1 - Predictions for Test Set")
+```
+
